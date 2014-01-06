@@ -124,7 +124,7 @@ class medoo
 
 	protected function column_quote($string)
 	{
-		return '`' . str_replace('.', '`.`', $string) . '`';
+		return '`' . str_replace(' AS ', '` AS `', str_replace('.', '`.`', $string)) . '`';
 	}
 
 	protected function array_quote($array)
@@ -377,9 +377,8 @@ class medoo
 	public function select($table, $join, $columns = null, $where = null)
 	{
 		$table = '`' . $table . '`';
-		$join_key = is_array($join) ? array_keys($join) : null;
 
-		if (strpos($join_key[0], '[') !== false)
+		if ($where !== null)
 		{
 			$table_join = array();
 
@@ -428,6 +427,16 @@ class medoo
 		}
 
 		$where_clause = $this->where_clause($where);
+
+		if(is_array($columns)){
+			$newColumns = array();
+			foreach($columns as $column){
+				$tmp = explode('[AS]', $column);
+				$newColumn = (count($tmp) == 2 && $tmp[1] !== '') ? $tmp[0].' AS '.$tmp[1] : $tmp[0];
+				$newColumns[] = $newColumn;
+			}
+			$columns = $newColumns;
+		}
 
 		$query =
 			$this->query('SELECT ' .

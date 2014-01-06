@@ -46,3 +46,7 @@ The Lightest PHP database framework to accelerate development
 * Official website: [http://medoo.in](http://medoo.in)
 
 * Documentation: [http://medoo.in/doc](http://medoo.in/doc)
+
+### Forked Features
+
+* **Column Aliasing** - use 'table1.column1[AS]newColumn' to get `table1`.`column1` AS `newColumn`

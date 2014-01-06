@@ -625,6 +625,22 @@ class medoo
 	{
 		return 0 + ($this->query('SELECT SUM(`' . $column . '`) FROM `' . $table . '`' . $this->where_clause($where))->fetchColumn());
 	}
+	
+	public function begin_transaction(){
+		return $this->pdo->beginTransaction();
+	}
+	
+	public function commit(){
+		return $this->pdo->commit();
+	}
+	
+	public function rollback(){
+		try{
+			return $this->pdo->rollBack();
+		}catch(PDOException $ex){
+			return false;
+		}
+	}
 
 	public function error()
 	{

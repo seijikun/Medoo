@@ -49,4 +49,4 @@ The Lightest PHP database framework to accelerate development
 
 ### Forked Features
 
-* **Column Aliasing** - use 'table1.column1[AS]newColumn' to get `table1`.`column1` AS `newColumn`
+* **Column Aliasing** - Use '[AS]' in the columnname-string to alias the column. (e.g. 'table1.column1[AS]column2')

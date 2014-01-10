@@ -50,3 +50,5 @@ The Lightest PHP database framework to accelerate development
 ### Forked Features
 
 * **Column Aliasing** - Use '[AS]' in the columnname-string to alias the column. (e.g. 'table1.column1[AS]column2')
+
+* **QueryAssembler** - Complete Documentation about this can be found at the bottom of medoo.php. This is only supporting SELECT-Queries at the moment but is intended to support more later.

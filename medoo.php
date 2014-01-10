@@ -812,7 +812,7 @@ abstract class Query {
 	
 	protected static function _condition($field, $value){
 		$matches = array();
-		if(preg_match('/^([a-zA-Z0-9_\-]+)(?:\[(=|!|%|>|<|<>|>=|<=)\])?$/', $field, $matches) > 0){
+		if(preg_match('/^([a-zA-Z0-9_\-]+)(?:\[(=|!=|%|>|<|<>|>=|<=)\])?$/', $field, $matches) > 0){
 			if(count($matches) == 2){//default equals expression
 				$matches[2] = '=';
 			}

@@ -18,6 +18,7 @@ The Lightest PHP database framework to accelerate development
 
 ### Get Started
 
+```php
     // Include Medoo
     require_once 'medoo.php';
     
@@ -40,6 +41,7 @@ The Lightest PHP database framework to accelerate development
         'username' => 'your_username',
         'password' => 'your_password',
     ]);
+```
 
 ### Links
 
@@ -51,4 +53,21 @@ The Lightest PHP database framework to accelerate development
 
 * **Column Aliasing** - Use '[AS]' in the columnname-string to alias the column. (e.g. 'table1.column1[AS]column2')
 
-* **QueryAssembler** - Complete Documentation about this can be found at the bottom of medoo.php. This is only supporting SELECT-Queries at the moment but is intended to support more later.
+* **QueryAssembler** - Complete Documentation about this can be found at the bottom of medoo.php. Generally it's following medoo's api design except for seperating parameters e.g. LIMIT, ORDER or GROUP out of WHERE and some additional features like ORDER BY FIELD as well as the NOT equal operator ("!=" instead of "!"). This is only supporting SELECT-Queries at the moment but is intended to support more later.
+
+```php
+    //for initialisation - see above
+    
+    $table = 'myTable';
+    $columns = ['myColumn1', 'myColumn2'];
+    $joins = [ '[<]myJoinTable' => 'myTable.myColumn1'] ]; //right join
+    $where = [ 'AND' => ['iq[<>]' => [1337,31337] ];
+    $group = 'myTable.myColumn4';
+    $having = [ 'email[!=]' => 'foo@bar.com' ]; //caution! "!=" instead of "!"
+    $order = [ 'myColumn2' => [2, 3, 1], 'myColumn ASC' ];
+    $limit = [1337, 31337];
+    
+    $query = new SelectQuery($database, $table, $columns, $joins, $where, $group, $order, $limit);
+    
+    $result = $database->query($query->toString());
+```

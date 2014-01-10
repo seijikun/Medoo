@@ -663,4 +663,324 @@ class medoo
 		);
 	}
 }
+
+/**
+ * @Baseclass of all QueryObjects
+ * @author: seijikun
+ */
+abstract class Query {
+	
+	/** private instance of medoo for escaping / quoting */
+	static $_medoo;	
+
+	//statics
+	protected static $_jointype = ['>' => 'LEFT', '<' => 'RIGHT', '<>' => 'FULL', '><' => 'INNER'];
+	protected static $_conditionlinks = ['AND', 'OR'];
+	protected static $_comparisionencoder = [	'default' => 'self::_encoder_default',
+												'<>' => 'self::_encoder_between',
+												'>' => 'self::_encoder_numeric',
+												'<' => 'self::_encoder_numeric',
+												'>=' => 'self::_encoder_numeric',
+												'<=' => 'self::_encoder_numeric',
+												'%' => 'self::_encoder_like'
+											];
+	
+	/** produce query */
+	abstract public function toString();
+	
+	
+	// ESCAPER / QUOTER \\
+	
+	/** simple escaping */
+	protected static function _escape($string){
+		return self::$_medoo->quote($string);
+	}
+	/** column quoter */
+	//supports ALIAS
+	protected static function _columnescape($column){
+		$tmp = explode('[AS]', $column);
+		return str_replace('.', '`.`', (count($tmp) == 2 && $tmp[1] !== '') ? '`'.$tmp[0].'` AS `'.$tmp[1].'`' : '`'.$tmp[0].'`');
+	}
+	
+	//sql assemblers\\
+	
+	/** assemble columns */
+	protected static function _columns($columns){
+		if(is_string($columns)){//all columns (*) or a single one
+			return ($columns == '*') ? '*' : self::_columnescape($columns);
+		}
+		$_columns = [];
+		foreach($columns as $table => $column){
+			if(is_string($column)){
+				$_columns[] = self::_columnescape($column);
+			}elseif(is_array($column)){
+				foreach($column as $sub_column){
+					$_columns[] = self::_columnescape($table . '.' . $sub_column);
+				}
+			}
+		}
+		return implode(', ', $_columns);
+	}
+	
+	/** assemble tablename */
+	protected static function _table($table){
+		return '`'.$table.'`';
+	}
+	
+	protected static function _join($joins){
+		$join_segment = "";
+		foreach($joins as $jointable => $params){
+			$_join = array(); $tmp_segment = "";
+			preg_match('/^\[(>|<|<>|><){1}\]([a-zA-Z0-9_\-]+)$/', $jointable, $_join);
+			if(count($_join) != 3) continue;
+			
+			$tmp_segment .= self::$_jointype[$_join[1]] . ' JOIN ' . self::_table($_join[2]);
+			if(is_string($params)){//single USING column
+				$tmp_segment .= ' USING(' . self::_columns($params) . ')';
+			}elseif(is_array($params)){
+				if(self::isAssoc($params)){//assoc array - ON CONDITION
+					$_cond1 = array_keys($params)[0];
+					$_cond2 = $params[$_cond1];
+					$tmp_segment .= ' ON ' . self::_columns($_cond1) . ' = ' . self::_columns($_cond2);
+				}else{//numeric array - USING
+					$tmp_segment .= ' USING(' . self::_columns($params) . ')';
+				}
+			} else{continue;}
+			$join_segment .= ' ' . $tmp_segment;
+		}
+		return $join_segment;
+	}
+	
+	protected static function _group($group){
+		return ' GROUP BY ' . self::_columns($group);
+	}
+	
+	protected static function _order($orders){
+		if(is_string($orders)){//all columns (*) or a single one
+			if(preg_match('/^([a-zA-Z0-9_\-]+)(\.?[a-zA-Z0-9_\-]+) (ASC|DESC){1}$/', $orders) > 0){
+				$tmp = explode(' ', $orders, 2);
+				return ' ORDER BY ' . self::_columnescape($tmp[0]) . ' ' . $tmp[1];
+			}
+		}
+		$order_statement = ' ORDER BY';
+		$cnt = 0;
+		foreach($orders as $order => $values){
+			if(is_array($values) && count($values) > 1){//FIELD ORDER
+				$tmp_statement = ($cnt === 0) ? ' FIELD(' : ', FIELD(';
+				$tmp_statement .= self::_columnescape($order).',';
+				for($i = 0; $i < count($values); $i++){
+					$tmp_statement .= self::_escape($values[$i]).',';
+				}
+				$tmp_statement = rtrim($tmp_statement, ",");
+				$tmp_statement .= ')';
+				$order_statement .= $tmp_statement;
+				$cnt++;
+			}elseif(is_string($values)){//DEFAULT ORDER
+				if(preg_match('/^([a-zA-Z0-9_\-]+)(\.?[a-zA-Z0-9_\-]+) (ASC|DESC){1}$/', $values) > 0){
+					$tmp = explode(' ', $values, 2);
+					$order_statement .= ($cnt === 0) ? ' ' : ', ';
+					$order_statement .= self::_columnescape($tmp[0]) . ' ' . $tmp[1];
+					$cnt++;
+				}
+			}
+		}
+		return $order_statement;
+	}
+	
+	protected static function _conditional($conditions, $condlink = null){
+		if($condlink === null){
+			$condition = array_keys($conditions)[0];
+			$value = $conditions[$condition];
+			if(is_array($value) && in_array($condition, self::$_conditionlinks)){
+				return self::_conditional($value, $condition);
+			}else{
+				return self::_condition($condition, $value);
+			}
+		}else{//link multiple conditions
+			$statement_segments = array();
+			foreach($conditions as $field => $value){
+				if(is_array($value) && in_array($field, self::$_conditionlinks)){
+					$statement_segments[] = self::_conditional($value, $field);
+				}else{
+					//TODO: implement   <FIELD> IN(<values>)
+					$statement_segments[] = self::_condition($field, $value);
+				}
+			}
+			return '('.implode(' '.$condlink.' ', $statement_segments).')';
+		}
+	}
+	
+	protected static function _condition($field, $value){
+		$matches = array();
+		if(preg_match('/^([a-zA-Z0-9_\-]+)(?:\[(=|!|%|>|<|<>|>=|<=)\])?$/', $field, $matches) > 0){
+			if(count($matches) == 2){//default equals expression
+				$matches[2] = '=';
+			}
+			if(count($matches) == 3){
+				//assembly
+				if(array_key_exists($matches[2], self::$_comparisionencoder)){//use special encoder
+					return call_user_func(self::$_comparisionencoder[$matches[2]], $matches, $value);
+				}else{//use default encoder
+					return call_user_func(self::$_comparisionencoder['default'], $matches, $value);
+				}
+			}
+		}
+	}
+	
+	protected static function _limit($data){
+		if(is_numeric($data) || is_string($data)){
+			return ' LIMIT ' . floatval($data);
+		}
+		if(is_array($data) && count($data) == 2){
+			return ' LIMIT ' . floatval($data[0]) . ', ' . floatval($data[1]);
+		}
+	}
+	
+	// COMPARISION ENCODERS \\
+	
+	protected static function _encoder_default($matches, $value){
+		if($matches[2] == '') $matches[2] = '=';
+		if(is_array($value)){//use IN expression
+			$tmp_condition = self::_columnescape($matches[1]) . (($matches[2] == '!') ? 'NOT' : '') . ' IN (';
+			$invals = [];
+			foreach($value as $inval) {$invals[] = self::_escape($inval);}
+			return $tmp_condition . implode(',', $invals) . ')';
+		}else{
+			return self::_columnescape($matches[1]) . $matches[2] . self::_escape($value);
+		}
+	}
+	
+	protected static function _encoder_numeric($matches, $value){
+		if(is_array($value)){//use IN expression
+			$tmp_condition = self::_columnescape($matches[1]) . (($matches[2] == '!') ? 'NOT' : '') . ' IN (';
+			$invals = [];
+			foreach($value as $inval) {$invals[] = floatval($inval);}
+			return $tmp_condition . implode(',', $invals) . ')';
+		}else{
+			return self::_columnescape($matches[1]) . $matches[2] . floatval($value);
+		}
+	}
+	
+	protected static function _encoder_between($matches, $values){
+		if(is_array($values) && count($values) == 2){
+			$between_statement = self::_columnescape($matches[1]). ' BETWEEN ';
+			if(is_numeric($values[0]) && is_numeric($values[1])){
+				return $between_statement . floatval($values[0]) . ' AND ' . floatval($values[1]);
+			}else{
+				return $between_statement . self::_columnescape($values[0]) . ' AND ' . self::_columnescape($values[1]);
+			}
+		}
+	}
+	
+	protected static function _encoder_like($matches, $value){
+		return self::_columnescape($matches[1]) . ' LIKE ' . self::_escape($value);
+	}
+	
+	// HELPER FUNCTIONS \\
+	
+	protected static function isAssoc($arr){
+		return array_keys($arr) !== range(0, count($arr) - 1);
+	}
+	
+}
+
+/**
+ * @SelectQuery object
+ * @author: seijikun
+ */
+class SelectQuery extends Query{
+	
+	/** string / array / associative array
+	 * @examples: '*'; ["TABLE1.COLUMN1", "COLUMN2", "COLUMN3[AS]COLUMN1337"]; ["TABLE1" => ["COLUMN2", "COLUMN4"], "TABLE2" => ["COLUMN1", "COLUMN3[AS]COLUMN1337"]]
+	 * @produces: SELECT *; SELECT `TABLE1.`,`COLUMN1`, `COLUMN2`, `COLUMN3` AS `COLUMN1337` ; SELECT `TABLE1`.`COLUMN2`, `TABLE1`.`COLUMN4`, `TABLE2`.`COLUMN1`, `TABLE2`.`COLUMN3` AS `COLUMN1337`
+	 * */
+	private $columns;
+	/** string 
+	 * @examples: 'TABLE1'
+	 * @procudes: SELECT COLUMNS FROM `TABLE1`
+	 * */
+	private $table;
+	/** associative array
+	 * @syntax: ["[JOINTYPE]JOINTABLE" => ["ON_TABLE1.ON_COLUMN1" => "ON_TABLE2.ON_COLUMN2"]]; ["[JOINTYPE]JOINTABLE" => "ON_TABLE1.ON_COLUMN1"]
+	 * @examples: ["[>]account" => ["author_id" => "user_id"], "[>]album" => "user_id", "[>]photo" => ["user_id", "avatar_id"]]
+	 * @produces: LEFT JOIN `account` ON `post`.`author_id` = `account`.`user_id` LEFT JOIN `album` USING (`user_id`) LEFT JOIN `photo` USING (`user_id`, `avatar_id`)
+	 * */
+	private $join;
+	/** associative array
+	 * @examples: ["AND" => ["user_age[>=]" => 18, "OR" => ["email" => ["foo@bar.com","bar@foo.com"], "user_id[>]" => 200], "suspendet[!]" => 1, "entry_age[<>]" => [200,'a500b']]]
+	 * @produces: WHERE (`user_age` >= '18' AND (`email` IN('foo@bar.com','bar@foo.com') OR `user_id` > '200') AND `suspendet` != '1' AND `entry_age` BETWEEN 200 AND 500)
+	 * @note: uses floatval() to retrieve numerics for BETWEEN statements
+	 * */
+	private $where;
+	/** string
+	 * @examples: 'COLUMN1'; 'TABLE1.COLUMN2'
+	 * @produces: GROUP BY `COLUMN1` ; GROUP BY `TABLE1`.`COLUMN2`
+	 * */
+	private $group;
+	/** associative array
+	 * @examples: ["AND" => ["user_age[>=]" => 18, "OR" => ["email" => ["foo@bar.com","bar@foo.com"], "user_id[>]" => 200], "suspendet[!]" => 1, "entry_age[<>]" => [200,'a500b']]]
+	 * @produces: ORDER BY ... HAVING (`user_age` >= '18' AND (`email` IN('foo@bar.com','bar@foo.com') OR `user_id` > '200') AND `suspendet` != '1' AND `entry_age` BETWEEN 200 AND 500)
+	 * @note: uses floatval() to retrieve numerics for BETWEEN statements
+	 * */
+	private $having;
+	/** string / array
+	 * @examples: 'COLUMN1 DESC'; ['TABLE1.COLUMN1 ASC', 'COLUMN2 DESC']; ['COLUMN1' => [2, '3', 1], 'COLUMN2 ASC']
+	 * @produces: ORDER BY `COLUMN1` DESC ; ORDER BY `TABLE1`.`COLUMN1` ASC, `COLUMN2` DESC; ORDER BY FIELD(`COLUMN1`, '2','3','1'), `COLUMN2` ASC
+	 * */
+	private $order;
+	/** numeric / string / array
+	 * @syntax: 20; '20'; [20, 'b30a']
+	 * @produces: LIMIT 20 ; LIMIT 20; LIMIT 20,30
+	 * @note: uses floatval() to retrieve numerics
+	 * */
+	private $limit;
+	
+	public function __construct(medoo &$medoo, $table = null, $columns = null, $join = null, $where = null, $group = null, $having = null, $order = null, $limit = null){
+		self::$_medoo = $medoo;
+		$this->table = $table;
+		$this->columns = $columns;
+		$this->join = $join;
+		$this->where = $where;
+		$this->group = $group;
+		$this->having = $having;
+		$this->order = $order;
+		$this->limit = $limit;
+	}
+	
+	public function toString(){
+		if($this->columns === null || $this->table === null){
+			throw new InvalidArgumentException('Table or Columns to query from missing!');
+		}
+		//SELECT - FROM - ...
+		$output = 'SELECT ' . self::_columns($this->columns) . ' FROM ' . self::_table($this->table);
+		//[TYPE] JOIN ON ...
+		if($this->join !== null){
+			if(!is_array($this->join)) throw new InvalidArgumentException('Join paramter invalid!');
+			$output .= self::_join($this->join);
+		}
+		if($this->where !== null){
+			if(!is_array($this->where)) throw new InvalidArgumentException('Where paramter invalid!');
+			$output .= ' WHERE ' . self::_conditional($this->where);
+		}
+		if($this->group !== null){
+			if(!is_string($this->group) || $this->group == '*') throw new InvalidArgumentException('Grouping paramter invalid!');
+			$output .= self::_group($this->group);
+		}
+		if($this->having !== null){
+			if(!is_array($this->having)) throw new InvalidArgumentException('Having paramter invalid!');
+			$output .= ' HAVING ' . self::_conditional($this->having);
+		}
+		if($this->order !== null){
+			if(!is_string($this->order) && !is_array($this->order)) throw new InvalidArgumentException('Ordering paramter invalid!');
+			$output .= self::_order($this->order);
+		}
+		if($this->limit !== null){
+			if(!is_numeric($this->limit) && !is_string($this->limit) && !is_array($this->limit)) throw new InvalidArgumentException('Limit paramter invalid!');
+			$output .= self::_limit($this->limit);
+		}
+		return $output;
+	}
+	
+}
+
 ?>

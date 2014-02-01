@@ -625,22 +625,6 @@ class medoo
 	{
 		return 0 + ($this->query('SELECT SUM(`' . $column . '`) FROM `' . $table . '`' . $this->where_clause($where))->fetchColumn());
 	}
-	
-	public function begin_transaction(){
-		return $this->pdo->beginTransaction();
-	}
-	
-	public function commit(){
-		return $this->pdo->commit();
-	}
-	
-	public function rollback(){
-		try{
-			return $this->pdo->rollBack();
-		}catch(PDOException $ex){
-			return false;
-		}
-	}
 
 	public function error()
 	{
@@ -787,26 +771,24 @@ abstract class Query {
 		return $order_statement;
 	}
 	
-	protected static function _conditional($conditions, $condlink = null){
-		if($condlink === null){
-			$condition = array_keys($conditions)[0];
-			$value = $conditions[$condition];
-			if(is_array($value) && in_array($condition, self::$_conditionlinks)){
-				return self::_conditional($value, $condition);
-			}else{
-				return self::_condition($condition, $value);
-			}
-		}else{//link multiple conditions
-			$statement_segments = array();
-			foreach($conditions as $field => $value){
-				if(is_array($value) && in_array($field, self::$_conditionlinks)){
+	protected static function _conditional($conditions, $condlink = 'AND'){
+		$statement_segments = array();
+		foreach($conditions as $field => $value){
+			if(is_array($value)){
+				if(is_numeric($field) && count($value) == 1){//array with linking-condition in it ['OR' => [...]]
+					$sublink = array_keys($value)[0];
+					$statement_segments[] = self::_conditional($value[$sublink], $sublink);
+				}
+				elseif(in_array($field, self::$_conditionlinks)){//conditions of a linking-container [... , 'OR' => [...] , ...]
 					$statement_segments[] = self::_conditional($value, $field);
-				}else{
+				}else{//conditionparameter
 					$statement_segments[] = self::_condition($field, $value);
 				}
+			}else{
+				$statement_segments[] = self::_condition($field, $value);
 			}
-			return '('.implode(' '.$condlink.' ', $statement_segments).')';
 		}
+		return '('.implode(' '.$condlink.' ', $statement_segments).')';
 	}
 	
 	protected static function _condition($field, $value){
@@ -890,50 +872,74 @@ abstract class Query {
 class SelectQuery extends Query{
 	
 	/** string / array / associative array
-	 * @examples: '*'; ["TABLE1.COLUMN1", "COLUMN2", "COLUMN3[AS]COLUMN1337"]; ["TABLE1" => ["COLUMN2", "COLUMN4"], "TABLE2" => ["COLUMN1", "COLUMN3[AS]COLUMN1337"]]
-	 * @produces: SELECT *; SELECT `TABLE1.`,`COLUMN1`, `COLUMN2`, `COLUMN3` AS `COLUMN1337` ; SELECT `TABLE1`.`COLUMN2`, `TABLE1`.`COLUMN4`, `TABLE2`.`COLUMN1`, `TABLE2`.`COLUMN3` AS `COLUMN1337`
+	 * @example[0]: '*'
+	 * @result[0]: SELECT *
+	 * 
+	 * @example[1]: ["TABLE1.COLUMN1", "COLUMN2", "COLUMN3[AS]COLUMN1337"]
+	 * @result[1]: SELECT `TABLE1.`,`COLUMN1`, `COLUMN2`, `COLUMN3` AS `COLUMN1337`
+	 * 
+	 * @example[2]: ["TABLE1" => ["COLUMN2", "COLUMN4"], "TABLE2" => ["COLUMN1", "COLUMN3[AS]COLUMN1337"]]
+	 * @result[2]: SELECT `TABLE1`.`COLUMN2`, `TABLE1`.`COLUMN4`, `TABLE2`.`COLUMN1`, `TABLE2`.`COLUMN3` AS `COLUMN1337`
 	 * */
 	private $columns;
 	/** string 
-	 * @examples: 'TABLE1'
-	 * @procudes: SELECT COLUMNS FROM `TABLE1`
 	 * */
 	private $table;
 	/** associative array
 	 * @syntax: ["[JOINTYPE]JOINTABLE" => ["ON_TABLE1.ON_COLUMN1" => "ON_TABLE2.ON_COLUMN2"]]; ["[JOINTYPE]JOINTABLE" => "ON_TABLE1.ON_COLUMN1"]
-	 * @examples: ["[>]account" => ["author_id" => "user_id"], "[>]album" => "user_id", "[>]photo" => ["user_id", "avatar_id"]]
-	 * @produces: LEFT JOIN `account` ON `post`.`author_id` = `account`.`user_id` LEFT JOIN `album` USING (`user_id`) LEFT JOIN `photo` USING (`user_id`, `avatar_id`)
+	 * 
+	 * @example[0]: ["[>]account" => ["author_id" => "user_id"], "[>]album" => "user_id", "[>]photo" => ["user_id", "avatar_id"]]
+	 * @result[0]: LEFT JOIN `account` ON `post`.`author_id` = `account`.`user_id` LEFT JOIN `album` USING (`user_id`) LEFT JOIN `photo` USING (`user_id`, `avatar_id`)
 	 * */
 	private $join;
-	/** associative array
-	 * @examples: ["AND" => ["user_age[>=]" => 18, "OR" => ["email" => ["foo@bar.com","bar@foo.com"], "user_id[>]" => 200], "suspendet[!]" => 1, "entry_age[<>]" => [200,'a500b']]]
-	 * @produces: WHERE (`user_age` >= '18' AND (`email` IN('foo@bar.com','bar@foo.com') OR `user_id` > '200') AND `suspendet` != '1' AND `entry_age` BETWEEN 200 AND 500)
-	 * @note: uses floatval() to retrieve numerics for BETWEEN statements
+	/** array / associative array
+	 * 
+	 * @comment[0]: possible operators: ['>', '<', '!=', '<=', '>=', '%' => 'LIKE', '<>' => 'BETWEEN']
+	 * @example[0]: ["AND" => ["user_age[>=]" => 18, "user_email[=]" => 'foo@bar.com']]
+	 * @result[0]: WHERE (`user_age` >= '18' AND `email` = 'foo@bar.com'
+	 * 
+	 * @example[1]: ["OR" => ["email" => ["foo@bar.com","bar@foo.com"]]
+	 * @result[1]: `email` IN('foo@bar.com','bar@foo.com')
+	 * 
+	 * @comment[2]: BETWEEN values have to be numeric, else they will be seen as other columns. (=> column1 BETWEEN column2 AND column3)
+	 * @example[2]: [['OR' => ["user_age[>=]" => 18, "user_email[=]" => 'foo@bar.com']],['OR' => ["suspendet[!=]" => 1, "entry_age[<>]" => [200,500]]]]
+	 * @result[2]: (`user_age`>=18 OR `user_email`='foo@bar.com') AND (`suspendet`!='1' OR `entry_age` BETWEEN 200 AND 500)
+	 * 
+	 * @note: if this is a normal array, all containing conditions will get linked by "AND"
 	 * */
 	private $where;
 	/** string
-	 * @examples: 'COLUMN1'; 'TABLE1.COLUMN2'
-	 * @produces: GROUP BY `COLUMN1` ; GROUP BY `TABLE1`.`COLUMN2`
+	 * @example[0]: 'COLUMN1'; 'TABLE1.COLUMN2'
+	 * @result[0]: GROUP BY `COLUMN1` ; GROUP BY `TABLE1`.`COLUMN2`
 	 * */
 	private $group;
-	/** associative array
-	 * @examples: ["AND" => ["user_age[>=]" => 18, "OR" => ["email" => ["foo@bar.com","bar@foo.com"], "user_id[>]" => 200], "suspendet[!]" => 1, "entry_age[<>]" => [200,'a500b']]]
-	 * @produces: ORDER BY ... HAVING (`user_age` >= '18' AND (`email` IN('foo@bar.com','bar@foo.com') OR `user_id` > '200') AND `suspendet` != '1' AND `entry_age` BETWEEN 200 AND 500)
-	 * @note: uses floatval() to retrieve numerics for BETWEEN statements
+	/** !SEE WHERE!
 	 * */
 	private $having;
 	/** string / array
-	 * @examples: 'COLUMN1 DESC'; ['TABLE1.COLUMN1 ASC', 'COLUMN2 DESC']; ['COLUMN1' => [2, '3', 1], 'COLUMN2 ASC']
-	 * @produces: ORDER BY `COLUMN1` DESC ; ORDER BY `TABLE1`.`COLUMN1` ASC, `COLUMN2` DESC; ORDER BY FIELD(`COLUMN1`, '2','3','1'), `COLUMN2` ASC
+	 * 
+	 * @example[0]: 'COLUMN1 DESC'
+	 * @result[0]: ORDER BY `COLUMN1` DESC
+	 * 
+	 * @example[1]: ['TABLE1.COLUMN1 ASC', 'COLUMN2 DESC']
+	 * @result[1]: ORDER BY `TABLE1`.`COLUMN1` ASC, `COLUMN2` DESC
+	 * 
+	 * @example[2]: ['COLUMN1' => [2, '3', 1], 'COLUMN2 ASC']
+	 * @result[2]: ORDER BY FIELD(`COLUMN1`, '2','3','1'), `COLUMN2` ASC
 	 * */
 	private $order;
-	/** numeric / string / array
-	 * @syntax: 20; '20'; [20, 'b30a']
-	 * @produces: LIMIT 20 ; LIMIT 20; LIMIT 20,30
-	 * @note: uses floatval() to retrieve numerics
+	/** numeric / array
+	 * @example[0]: 20
+	 * @result[0]: LIMIT 20
+	 * 
+	 * @example[1]: [20, 30]
+	 * @result[1]: LIMIT 20,30
 	 * */
 	private $limit;
 	
+	/**
+	 * @note: Every parameter that isn't needed should be set as null.
+	 * */
 	public function __construct(medoo &$medoo, $table = null, $columns = null, $join = null, $where = null, $group = null, $having = null, $order = null, $limit = null){
 		self::$_medoo = $medoo;
 		$this->table = $table;
@@ -952,7 +958,6 @@ class SelectQuery extends Query{
 		}
 		//SELECT - FROM - ...
 		$output = 'SELECT ' . self::_columns($this->columns) . ' FROM ' . self::_table($this->table);
-		//[TYPE] JOIN ON ...
 		if($this->join !== null){
 			if(!is_array($this->join)) throw new InvalidArgumentException('Join paramter invalid!');
 			$output .= self::_join($this->join);
